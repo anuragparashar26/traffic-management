@@ -3,10 +3,12 @@
 This module provides:
 - A simple genetic algorithm to optimize traffic light green times.
 - YOLOv4-tiny based vehicle detection over video streams.
+- YOLOv8 based helmet and bike rider detection for safety compliance.
 
 Public API:
 - optimize_traffic(cars) -> dict[str, int]
 - detect_cars(video_file) -> float
+- detect_helmets(video_file) -> dict[str, int]
 - record_and_detect(video_file, output_file) -> None
 """
 
@@ -20,6 +22,14 @@ from typing import Deque, List, Sequence, Tuple
 import cv2 as cv
 import numpy as np
 from scipy.signal import find_peaks
+from ultralytics import YOLO
+
+# Check for CUDA availability
+try:
+    import torch
+    _HAS_CUDA = torch.cuda.is_available()
+except Exception:
+    _HAS_CUDA = False
 
 # --- Genetic Algorithm Section ---
 def fitness_function(C: float, g: float, x: float, c: float) -> float:
@@ -304,3 +314,229 @@ def record_and_detect(video_file: str, output_file: str) -> None:
         cap.release()
         cv.destroyAllWindows()
         print('done')
+
+# --- YOLOv8 Helmet Detection Section ---
+
+def _load_helmet_model() -> YOLO:
+    """Load the YOLOv8 model for helmet detection."""
+    model_path = _resolve_path('weights/best.pt')
+    try:
+        model = YOLO(model_path)
+        print(f"Model loaded successfully from {model_path}")
+        print(f"Model classes: {model.names}")
+        return model
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        raise
+
+def _norm_name(name: str) -> str:
+    """Normalize class name for consistent matching."""
+    return name.lower().replace('-', ' ').strip()
+
+def _iou(box1: Tuple[int,int,int,int], box2: Tuple[int,int,int,int]) -> float:
+    """Compute Intersection over Union (IoU) for two bounding boxes."""
+    x1_inter = max(box1[0], box2[0])
+    y1_inter = max(box1[1], box2[1])
+    x2_inter = min(box1[2], box2[2])
+    y2_inter = min(box1[3], box2[3])
+
+    inter_area = max(0, x2_inter - x1_inter) * max(0, y2_inter - y1_inter)
+    box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union_area = box1_area + box2_area - inter_area
+
+    return inter_area / union_area if union_area > 0 else 0
+
+def detect_helmets(video_file: str) -> dict[str, int]:
+    """Continuous helmet/rider detection with tracking and robust no-helmet inference."""
+    model = _load_helmet_model()
+    cap = cv.VideoCapture(video_file)
+    if not cap.isOpened():
+        print(f"Error: Cannot open video file {video_file}")
+        return {'helmet': 0, 'no_helmet': 0, 'rider': 0}
+
+    # Stable, per-track voting to avoid oscillations
+    track_state: dict[int, dict] = {}  # tid -> {'frames', 'helmet_votes', 'no_helmet_votes', 'rider_votes', 'last_box'}
+    helmet_ids: set[int] = set()
+    no_helmet_ids: set[int] = set()
+    rider_ids: set[int] = set()
+
+    # Tunables
+    min_track_frames = 6
+    min_rider_votes = 2
+    min_helmet_votes = 3  # increased to reduce false helmet commits
+    min_no_helmet_votes = 3
+    helmet_conf_min = 0.60  # only trust helmet boxes >= 0.60
+    no_helmet_conf_min = 0.55
+
+    # Precompute name variants
+    model_names = {cid: _norm_name(n) for cid, n in getattr(model, 'names', {}).items()}
+    has_explicit_nohelmet = any(
+        kw in model_names.values()
+        for kw in ('no helmet', 'without helmet', 'nohelmet')
+    )
+    print(f"Has explicit no-helmet class: {has_explicit_nohelmet}")
+
+    cv.namedWindow('Helmet Detection', cv.WINDOW_NORMAL)
+    cv.setWindowProperty('Helmet Detection', cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
+
+    start = time.time()
+    frames = 0
+    debug_mode = True
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frames += 1
+
+            H, W = frame.shape[:2]
+            min_area = max(900, int(0.0004 * W * H))  # dynamic area threshold
+
+            # Helpers (local)
+            def box_area(b): return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+            def center(b): return ((b[0] + b[2]) // 2, (b[1] + b[3]) // 2)
+            def head_region(rbox):
+                x1, y1, x2, y2 = rbox
+                return (x1, y1, x2, y1 + int(0.5 * (y2 - y1)))  # top half
+            def helmet_on_head(rbox, hbox) -> bool:
+                cx, cy = center(hbox)
+                x1, y1, x2, y2 = head_region(rbox)
+                inside = (x1 <= cx <= x2) and (y1 <= cy <= y2)
+                return inside and _iou(rbox, hbox) > 0.05
+
+            results = model.track(
+                frame,
+                conf=0.5,
+                iou=0.7,
+                imgsz=640,
+                persist=True,
+                tracker='bytetrack.yaml',
+                device=(0 if _HAS_CUDA else 'cpu'),
+                verbose=False
+            )
+
+            # Per-frame collections
+            helmet_boxes: List[Tuple[Tuple[int,int,int,int], float]] = []  # (box, conf)
+            motorbike_boxes: List[Tuple[int,int,int,int]] = []
+            rider_candidates: List[Tuple[int, Tuple[int,int,int,int], str]] = []  # (tid, rbox, src)
+            person_candidates: List[Tuple[int, Tuple[int,int,int,int]]] = []
+            no_helmet_candidates: List[Tuple[Tuple[int,int,int,int], float]] = []  # (box, conf)
+
+            # First pass: gather boxes and update track states (no direct helmet votes here)
+            for res in results:
+                names = getattr(res, 'names', model_names)
+                for b in res.boxes:
+                    cls_id = int(b.cls.item())
+                    cname = _norm_name(names.get(cls_id, str(cls_id)))
+                    conf = float(b.conf.item()) if hasattr(b, 'conf') else 0.0
+                    xyxy = tuple(map(int, b.xyxy[0].tolist()))
+                    tid = int(b.id.item()) if getattr(b, 'id', None) is not None else -1
+
+                    if box_area(xyxy) < min_area:
+                        continue
+
+                    if tid >= 0:
+                        st = track_state.setdefault(tid, {'frames': 0, 'helmet_votes': 0, 'no_helmet_votes': 0, 'rider_votes': 0, 'last_box': xyxy})
+                        st['frames'] += 1
+                        st['last_box'] = xyxy
+
+                    is_helmet = ('helmet' in cname) and not any(k in cname for k in ('no helmet', 'without helmet', 'nohelmet'))
+                    is_nohelmet = any(k in cname for k in ('no helmet', 'without helmet', 'nohelmet'))
+                    is_rider_label = any(k in cname for k in ('rider', 'motorcyclist'))
+                    is_person = cname == 'person'
+                    is_bike = cname in ('motorbike', 'motorcycle')
+
+                    if is_helmet:
+                        helmet_boxes.append((xyxy, conf))  # collect only; associate later
+                    elif is_nohelmet:
+                        no_helmet_candidates.append((xyxy, conf))  # collect only
+
+                    if is_rider_label and tid >= 0:
+                        track_state[tid]['rider_votes'] += 1
+                        rider_candidates.append((tid, xyxy, 'label:rider'))
+                    elif is_person:
+                        person_candidates.append((tid, xyxy))
+
+                    if is_bike:
+                        motorbike_boxes.append(xyxy)
+
+            # Associate persons with motorbikes to infer riders (adds rider vote)
+            for tid, pbox in person_candidates:
+                if tid < 0:
+                    continue
+                if any(_iou(pbox, m) > 0.1 for m in motorbike_boxes):
+                    track_state.setdefault(tid, {'frames': 0, 'helmet_votes': 0, 'no_helmet_votes': 0, 'rider_votes': 0, 'last_box': pbox})
+                    track_state[tid]['rider_votes'] += 1
+                    rider_candidates.append((tid, pbox, 'assoc:person+motorbike'))
+
+            # Associate helmets/no-helmets to rider head regions and cast votes on rider tracks
+            if rider_candidates:
+                # Build fast lists
+                hb = [(b, c) for (b, c) in helmet_boxes if c >= helmet_conf_min]
+                nb = [(b, c) for (b, c) in no_helmet_candidates if c >= no_helmet_conf_min]
+
+                for tid, rbox, _src in rider_candidates:
+                    if tid < 0:
+                        continue
+                    # Helmet vote if any helmet is on head region
+                    has_helmet = any(helmet_on_head(rbox, hbox) for (hbox, hconf) in hb)
+                    if has_helmet:
+                        track_state[tid]['helmet_votes'] += 1
+                    elif has_explicit_nohelmet:
+                        # Only add a no-helmet vote if explicit detection overlaps head region
+                        hreg = head_region(rbox)
+                        overlaps_nohelmet = any(_iou(hreg, nbox) > 0.10 for (nbox, nconf) in nb)
+                        if overlaps_nohelmet:
+                            track_state[tid]['no_helmet_votes'] += 1
+
+            # Commit stable decisions per track (only for confirmed riders)
+            for tid, st in list(track_state.items()):
+                frames_seen = st['frames']
+                if frames_seen < min_track_frames:
+                    continue
+
+                is_rider = st['rider_votes'] >= min_rider_votes
+                if is_rider:
+                    rider_ids.add(tid)
+
+                    # Helmet/no-helmet commit rules (avoid flips, and only for riders)
+                    if st['helmet_votes'] >= min_helmet_votes and st['helmet_votes'] > st['no_helmet_votes']:
+                        helmet_ids.add(tid)
+                        no_helmet_ids.discard(tid)
+                    elif st['no_helmet_votes'] >= min_no_helmet_votes and st['helmet_votes'] == 0:
+                        if tid not in helmet_ids:
+                            no_helmet_ids.add(tid)
+                else:
+                    # Ensure we don't count non-rider tracks
+                    helmet_ids.discard(tid)
+                    no_helmet_ids.discard(tid)
+
+            # Overlay
+            fps = frames / max(1e-3, (time.time() - start))
+            cv.putText(frame, f'FPS: {fps:.2f}', (20, 50), cv.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 0), 2)
+            cv.putText(frame, f'Helmets (tracks): {len(helmet_ids)}', (20, 80), cv.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 255), 2)
+            cv.putText(frame, f'No Helmets (tracks): {len(no_helmet_ids)}', (20, 110), cv.FONT_HERSHEY_COMPLEX, 0.7, (255, 255, 0), 2)
+            cv.putText(frame, f'Riders (tracks): {len(rider_ids)}', (20, 140), cv.FONT_HERSHEY_COMPLEX, 0.7, (255, 0, 255), 2)
+
+            if debug_mode and frames % 30 == 0:
+                print(f"Frame {frames}: riders={len(rider_ids)} helmet={len(helmet_ids)} no_helmet={len(no_helmet_ids)}")
+
+            cv.imshow('Helmet Detection', frame)
+            key = cv.waitKey(1)
+            if key == ord('q') or key == 27:
+                break
+    finally:
+        cap.release()
+        cv.destroyAllWindows()
+
+    # Final summary
+    summary = f"Video processed: {frames} frames. Unique tracks -> Helmets={len(helmet_ids)}, No Helmets={len(no_helmet_ids)}, Riders={len(rider_ids)}"
+    print(summary)
+
+    return {
+        'helmet': len(helmet_ids),
+        'no_helmet': len(no_helmet_ids),
+        'rider': len(rider_ids)
+    }

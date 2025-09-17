@@ -3,6 +3,8 @@
 Public endpoint:
 - POST /upload with form-data field 'videos' containing exactly 4 files
     Returns JSON with optimized green times.
+- POST /detect_helmets with form-data field 'video' containing 1 file
+    Returns JSON with helmet detection counts.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import List
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from traffic_detection import detect_cars, optimize_traffic
+from traffic_detection import detect_cars, detect_helmets, optimize_traffic
 
 app = Flask(__name__)
 CORS(app)
@@ -41,6 +43,22 @@ def upload_files():
         num_cars_list.append(num_cars)
 
     result = optimize_traffic(num_cars_list)
+
+    return jsonify(result)
+
+@app.route('/detect_helmets', methods=['POST'])
+def detect_helmets_endpoint():
+    """Handle upload of one video and return helmet detection results."""
+    file = request.files.get('video')
+    if not file:
+        return jsonify({'error': 'Please upload a video'}), 400
+
+    upload_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+    os.makedirs(upload_dir, exist_ok=True)
+    video_path = os.path.join(upload_dir, 'helmet_video.mp4')
+    file.save(video_path)
+
+    result = detect_helmets(video_path)
 
     return jsonify(result)
 

@@ -45,12 +45,25 @@ const ErrorBanner = ({ message, onDismiss }) => (
   </div>
 );
 
+const HelmetResultCard = ({ label, value, icon }) => (
+  <div className="direction-card" aria-label={`${label} count`}>
+    <div className="dir-header">{icon}<span>{label}</span></div>
+    <div className="dir-value">{value}</div>
+  </div>
+);
+
 function App() {
   const [files, setFiles] = useState(Array(REQUIRED_FILES).fill(null));
   const [dragActive, setDragActive] = useState(false);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // New state for helmet detection
+  const [helmetFile, setHelmetFile] = useState(null);
+  const [helmetResult, setHelmetResult] = useState(null);
+  const [helmetLoading, setHelmetLoading] = useState(false);
+  const [helmetError, setHelmetError] = useState(null);
 
   const handleFiles = useCallback((incoming) => {
     setError(null);
@@ -103,6 +116,31 @@ function App() {
     }
   };
 
+  // New handlers for helmet detection
+  const onHelmetInputChange = (e) => {
+    setHelmetFile(e.target.files[0]);
+    setHelmetError(null);
+  };
+
+  const submitHelmet = async () => {
+    if (!helmetFile) { setHelmetError('Please select a video for helmet detection.'); return; }
+    setHelmetLoading(true);
+    setHelmetError(null);
+    setHelmetResult(null);
+    const formData = new FormData();
+    formData.append('video', helmetFile);
+    try {
+      const { data } = await axios.post(`${API_BASE}/detect_helmets`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setHelmetResult(data);
+    } catch (e) {
+      setHelmetError(e?.response?.data?.error || 'Helmet detection failed.');
+    } finally {
+      setHelmetLoading(false);
+    }
+  };
+
+  const clearHelmet = () => { setHelmetFile(null); setHelmetResult(null); };
+
   return (
     <div className="dashboard-root">
       <aside className="sidebar">
@@ -110,6 +148,7 @@ function App() {
         <nav>
           <a href="#upload">Upload</a>
           <a href="#results">Results</a>
+          <a href="#helmet">Helmet Detection</a>
           <a href="https://github.com" target="_blank" rel="noreferrer">Docs</a>
         </nav>
         <div className="footer">v2.0 Dashboard</div>
@@ -159,6 +198,27 @@ function App() {
           {result && result.error && <p className="error-text">{result.error}</p>}
         </section>
 
+        <section id="helmet" className="panel helmet-panel">
+          <h2>3. Helmet Detection</h2>
+          <p className="muted">Upload a video to detect bike riders, helmets, and no-helmet cases for safety compliance.</p>
+          <div className="actions" style={{ marginBottom: '16px' }}>
+            <input id="helmet-input" type="file" accept="video/*" onChange={onHelmetInputChange} hidden />
+            <button type="button" className="outline" onClick={() => document.getElementById('helmet-input').click()}>Select Video</button>
+            <button onClick={clearHelmet} disabled={helmetLoading}>Clear</button>
+            <button className="primary" onClick={submitHelmet} disabled={!helmetFile || helmetLoading}>{helmetLoading ? 'Detecting...' : 'Run Detection'}</button>
+          </div>
+          {helmetFile && <p className="muted">Selected: {helmetFile.name}</p>}
+          {helmetError && <ErrorBanner message={helmetError} onDismiss={() => setHelmetError(null)} />}
+          {helmetLoading && <Loader text="Analyzing video for helmets..." />}
+          {helmetResult && !helmetLoading && (
+            <div className="directions-grid">
+              <HelmetResultCard label="Helmets" value={helmetResult.helmet} icon="🛡️" />
+              <HelmetResultCard label="No Helmets" value={helmetResult.no_helmet} icon="🚫" />
+              <HelmetResultCard label="Riders" value={helmetResult.rider} icon="🏍️" />
+            </div>
+          )}
+        </section>
+
         <section className="panel info-panel">
           <h2>Methodology</h2>
             <ul className="info-list">
@@ -166,6 +226,7 @@ function App() {
               <li>Genetic Algorithm searches green time allocations within cycle constraints.</li>
               <li>Objective minimizes combined delay using calibrated fitness function.</li>
               <li>Recommended times are integers (seconds) capped at 60s per phase.</li>
+              <li>YOLOv8 detects helmets, no-helmets, and riders for safety.</li>
             </ul>
         </section>
       </main>

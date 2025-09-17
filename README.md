@@ -2,13 +2,14 @@
 
 ## Overview
 
-This project utilizes computer vision and artificial intelligence for real-time traffic management in urban settings. By analyzing feeds from CCTV cameras at intersections, the system dynamically give optimized traffic signal timings to optimize vehicle flow and reduce congestion. It features a dashboard for visualizing traffic data and system operations.
+This project utilizes computer vision and artificial intelligence for real-time traffic management in urban settings. By analyzing feeds from CCTV cameras at intersections, the system dynamically give optimized traffic signal timings to optimize vehicle flow and reduce congestion. It features a dashboard for visualizing traffic data and system operations, and includes safety enhancements like helmet detection for bike riders to prevent accidents.
 
 ## Features
 
 - Real-time traffic monitoring using 4 intersection videos
 - AI-driven traffic signal optimization
 - Dashboard for visualization
+- Helmet detection for rider safety (detects bike riders, helmets, and no-helmet cases)
 
 ## Installation
 
@@ -44,7 +45,6 @@ This project utilizes computer vision and artificial intelligence for real-time 
 
 ## Future Updates
 
-- Helmet detection for rider safety
 - License plate recognition for traffic violation detection
 - Database integration options for saving events and analytics
 
