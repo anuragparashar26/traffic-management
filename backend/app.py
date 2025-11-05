@@ -15,7 +15,7 @@ from typing import List
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from traffic_detection import detect_cars, detect_helmets, optimize_traffic
+from traffic_detection import detect_cars, optimize_traffic
 
 app = Flask(__name__)
 CORS(app)
@@ -27,7 +27,6 @@ def upload_files():
     if len(files) != 4:
         return jsonify({'error': 'Please upload exactly 4 videos'}), 400
 
-    # Resolve upload directory relative to this file for robustness
     upload_dir = os.path.join(os.path.dirname(__file__), 'uploads')
     os.makedirs(upload_dir, exist_ok=True)
 
@@ -63,7 +62,6 @@ def detect_helmets_endpoint():
     return jsonify(result)
 
 if __name__ == '__main__':
-    # Ensure upload directory exists when running directly
     upload_dir = os.path.join(os.path.dirname(__file__), 'uploads')
     os.makedirs(upload_dir, exist_ok=True)
     app.run(debug=True)
