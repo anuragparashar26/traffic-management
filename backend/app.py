@@ -12,13 +12,18 @@ from __future__ import annotations
 import os
 from typing import List
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-from traffic_detection import detect_cars, optimize_traffic
+from traffic_detection import detect_cars, optimize_traffic, detect_helmets
 
 app = Flask(__name__)
 CORS(app)
+
+@app.route('/static/<path:path>')
+def serve_static(path):
+    """Serve static files (violation images)."""
+    return send_from_directory('static', path)
 
 @app.route('/upload', methods=['POST'])
 def upload_files():

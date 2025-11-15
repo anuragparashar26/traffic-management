@@ -3,23 +3,33 @@
 This module provides:
 - A simple genetic algorithm to optimize traffic light green times.
 - YOLOv4-tiny based vehicle detection over video streams.
+- YOLOv8 based helmet detection for bike riders.
 
 Public API:
 - optimize_traffic(cars) -> dict[str, int]
 - detect_cars(video_file) -> float
 - record_and_detect(video_file, output_file) -> None
+- detect_helmets(video_file) -> dict
 """
 
 from __future__ import annotations
 
 import os
 import time
+import json
+import math
 from collections import deque
 from typing import Deque, List, Sequence, Tuple
+from datetime import datetime
 
 import cv2 as cv
 import numpy as np
 from scipy.signal import find_peaks
+import cvzone
+import torch
+from ultralytics import YOLO
+from paddleocr import PaddleOCR
+from image_to_text import predict_number_plate
 
 # --- Genetic Algorithm Section ---
 def fitness_function(C: float, g: float, x: float, c: float) -> float:
@@ -218,8 +228,6 @@ def detect_cars(video_file: str) -> float:
     mean_peak_value: float = 0.0  # default in case video can't be read
     starting_time = time.time()
     frame_counter = 0
-    cv.namedWindow('frame', cv.WINDOW_NORMAL)
-    cv.setWindowProperty('frame', cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
     car_counts: Deque[Tuple[float, int]] = deque()
     try:
         while True:
@@ -253,13 +261,10 @@ def detect_cars(video_file: str) -> float:
             fps = frame_counter / (ending_time - starting_time)
             cv.putText(frame, f'FPS: {fps:.2f}', (20, 50), cv.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 0), 2)
             cv.putText(frame, f'Mean Peak Cars : {mean_peak_value:.2f}', (20, 80), cv.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 255), 2)
-            cv.imshow('frame', frame)
-            key = cv.waitKey(1)
-            if key == ord('q'):
-                break
+
     finally:
         cap.release()
-        cv.destroyAllWindows()
+        
     return float(mean_peak_value)
 
 def record_and_detect(video_file: str, output_file: str) -> None:
@@ -304,3 +309,170 @@ def record_and_detect(video_file: str, output_file: str) -> None:
         cap.release()
         cv.destroyAllWindows()
         print('done')
+
+
+def detect_helmets(video_file: str) -> dict:
+    """Detect helmet violations in video using YOLOv8.
+    
+    Args:
+        video_file: Path to the video file to analyze.
+    
+    Returns:
+        Dict with counts and violation details:
+        {
+            'helmet': int,
+            'no_helmet': int,
+            'rider': int,
+            'violations': list of violation records
+        }
+    """
+    # Load the YOLOv8 model
+    model_path = os.path.join(os.path.dirname(__file__), 'best.pt')
+    model = YOLO(model_path)
+    
+    # Setup device
+    device = torch.device("cpu")  # change to cuda for GPU
+    
+    classNames = ["with helmet", "without helmet", "rider", "number plate"]
+    
+    # Violation saving setup
+    VIOLATION_DIR = os.path.join(os.path.dirname(__file__), "static", "violations")
+    VIOLATIONS_JSON = os.path.join(os.path.dirname(__file__), "violations.json")
+    os.makedirs(VIOLATION_DIR, exist_ok=True)
+    
+    def load_violations():
+        if os.path.exists(VIOLATIONS_JSON):
+            with open(VIOLATIONS_JSON, 'r') as f:
+                try:
+                    return json.load(f)
+                except json.JSONDecodeError:
+                    return []
+        return []
+    
+    def save_violations(data):
+        with open(VIOLATIONS_JSON, 'w') as f:
+            json.dump(data, f, indent=4)
+    
+    violations_data = load_violations()
+    detected_plates_in_session = set(v['plate_text'] for v in violations_data)
+    
+    # Initialize OCR
+    ocr = PaddleOCR(use_angle_cls=True, lang='en')
+    
+    # Open video
+    cap = cv.VideoCapture(video_file)
+    
+    # Counters
+    total_helmets = 0
+    total_no_helmets = 0
+    total_riders = 0
+    violations_found = []
+    
+    while True:
+        success, img = cap.read()
+        if not success:
+            break
+            
+        new_img = cv.cvtColor(img, cv.COLOR_BGR2RGB)
+        results = model(new_img, stream=True, device="cpu")
+        
+        frame_riders = {}  # To hold info about riders in the current frame
+        
+        for r in results:
+            boxes = r.boxes
+            for box in boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                conf = math.ceil((box.conf[0] * 100)) / 100
+                cls = int(box.cls[0])
+                class_name = classNames[cls]
+                
+                if class_name == "rider" and conf > 0.45:
+                    # Use rider's bounding box center as a unique ID for the frame
+                    rider_id = f"rider_{(x1+x2)//2}_{(y1+y2)//2}"
+                    if rider_id not in frame_riders:
+                        frame_riders[rider_id] = {
+                            "box": (x1, y1, x2, y2),
+                            "has_helmet": True,  # Assume has helmet until "without helmet" is found
+                            "plate": None,
+                            "plate_confidence": 0
+                        }
+                    total_riders += 1
+                
+                elif class_name == "with helmet" and conf > 0.5:
+                    total_helmets += 1
+                    # Associate with the closest rider
+                    for rider_id, rider_info in frame_riders.items():
+                        rx1, ry1, rx2, ry2 = rider_info["box"]
+                        if x1 > rx1 and y1 > ry1 and x2 < rx2 and y2 < ry2:
+                            rider_info["has_helmet"] = True
+                
+                elif class_name == "without helmet" and conf > 0.5:
+                    total_no_helmets += 1
+                    # Associate with the closest rider
+                    for rider_id, rider_info in frame_riders.items():
+                        rx1, ry1, rx2, ry2 = rider_info["box"]
+                        if x1 > rx1 and y1 > ry1 and x2 < rx2 and y2 < ry2:
+                            rider_info["has_helmet"] = False
+                
+                elif class_name == "number plate" and conf > 0.5:
+                    # Associate with the closest rider
+                    for rider_id, rider_info in frame_riders.items():
+                        rx1, ry1, rx2, ry2 = rider_info["box"]
+                        if x1 > rx1 and y1 > ry1 and x2 < rx2 and y2 < ry2:
+                            plate_crop = img[y1:y2, x1:x2]
+                            try:
+                                vechicle_number, ocr_conf = predict_number_plate(plate_crop, ocr)
+                                if vechicle_number and ocr_conf > rider_info["plate_confidence"]:
+                                    rider_info["plate"] = {
+                                        "box": (x1, y1, x2, y2),
+                                        "text": vechicle_number,
+                                        "ocr_confidence": ocr_conf,
+                                        "crop": plate_crop
+                                    }
+                                    rider_info["plate_confidence"] = ocr_conf
+                            except Exception as e:
+                                print(f"OCR Error: {e}")
+        
+        # Process and save violations
+        for rider_id, rider_info in frame_riders.items():
+            if not rider_info["has_helmet"] and rider_info["plate"]:
+                plate_text = rider_info["plate"]["text"]
+                
+                if plate_text and plate_text not in detected_plates_in_session:
+                    print(f"VIOLATION: Rider without helmet, Plate: {plate_text}")
+                    detected_plates_in_session.add(plate_text)
+                    
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    
+                    # Save rider crop
+                    rx1, ry1, rx2, ry2 = rider_info["box"]
+                    rider_crop = img[ry1:ry2, rx1:rx2]
+                    rider_filename = f"rider_{timestamp}.jpg"
+                    cv.imwrite(os.path.join(VIOLATION_DIR, rider_filename), rider_crop)
+                    
+                    # Save plate crop
+                    plate_filename = f"plate_{timestamp}.jpg"
+                    cv.imwrite(os.path.join(VIOLATION_DIR, plate_filename), rider_info["plate"]["crop"])
+                    
+                    # Create violation record
+                    violation_record = {
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "rider_image": f"violations/{rider_filename}",
+                        "plate_image": f"violations/{plate_filename}",
+                        "plate_text": plate_text,
+                        "plate_confidence": rider_info["plate"]["ocr_confidence"]
+                    }
+                    
+                    violations_data.append(violation_record)
+                    violations_found.append(violation_record)
+                    save_violations(violations_data)
+    
+    cap.release()
+    print("Helmet detection processing finished.")
+    
+    return {
+        'helmet': total_helmets,
+        'no_helmet': total_no_helmets,
+        'rider': total_riders,
+        'violations': violations_found
+    }

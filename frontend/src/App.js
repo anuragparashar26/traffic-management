@@ -52,6 +52,26 @@ const HelmetResultCard = ({ label, value, icon }) => (
   </div>
 );
 
+const ViolationCard = ({ violation }) => (
+  <div className="violation-card">
+    <div className="violation-header">
+      <h3>🚨 License Plate: {violation.plate_text}</h3>
+      <span className="confidence">Confidence: {(violation.plate_confidence * 100).toFixed(2)}%</span>
+    </div>
+    <div className="violation-images">
+      <div className="img-container">
+        <img src={`${API_BASE}/${violation.rider_image}`} alt="Rider" />
+        <label>Rider</label>
+      </div>
+      <div className="img-container">
+        <img src={`${API_BASE}/${violation.plate_image}`} alt="License Plate" />
+        <label>Plate</label>
+      </div>
+    </div>
+    <div className="violation-timestamp">{violation.timestamp}</div>
+  </div>
+);
+
 function App() {
   const [files, setFiles] = useState(Array(REQUIRED_FILES).fill(null));
   const [dragActive, setDragActive] = useState(false);
@@ -199,7 +219,7 @@ function App() {
         </section>
 
         <section id="helmet" className="panel helmet-panel">
-          <h2>3. Helmet Detection</h2>
+          <h2>3. Helmet Detection & Violation Tracking</h2>
           <p className="muted">Upload a video to detect bike riders, helmets, and no-helmet cases for safety compliance.</p>
           <div className="actions" style={{ marginBottom: '16px' }}>
             <input id="helmet-input" type="file" accept="video/*" onChange={onHelmetInputChange} hidden />
@@ -211,11 +231,21 @@ function App() {
           {helmetError && <ErrorBanner message={helmetError} onDismiss={() => setHelmetError(null)} />}
           {helmetLoading && <Loader text="Analyzing video for helmets..." />}
           {helmetResult && !helmetLoading && (
-            <div className="directions-grid">
-              <HelmetResultCard label="Helmets" value={helmetResult.helmet} icon="🛡️" />
-              <HelmetResultCard label="No Helmets" value={helmetResult.no_helmet} icon="🚫" />
-              <HelmetResultCard label="Riders" value={helmetResult.rider} icon="🏍️" />
-            </div>
+            <>
+              {helmetResult.violations && helmetResult.violations.length > 0 && (
+                <div className="violations-section">
+                  <h3>⚠️ Violations Detected ({helmetResult.violations.length})</h3>
+                  <div className="violations-grid">
+                    {helmetResult.violations.map((violation, idx) => (
+                      <ViolationCard key={idx} violation={violation} />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {helmetResult.violations && helmetResult.violations.length === 0 && (
+                <p className="no-violations">✅ No violations detected in this video.</p>
+              )}
+            </>
           )}
         </section>
 
