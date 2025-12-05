@@ -265,7 +265,7 @@ function App() {
           <a href="#upload">Traffic Analysis</a>
           <a href="#helmet">Helmet Detection</a>
           <a href="#violations">Violation Records</a>
-          <a href="https://github.com/anuragparashar26/traffic-management" target="_blank" rel="noreferrer">Github</a>
+          <a href="https://github.com/anuragparashar26/traffic-management" target="_blank" rel="noreferrer">Github/Docs</a>
         </nav>
         <div className="footer">v3.0 Dashboard</div>
       </aside>
