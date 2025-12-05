@@ -1,6 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import axios from 'axios';
 import './styles.css';
+import { supabase } from './supabaseClient';
 
 const REQUIRED_FILES = 4;
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5000';
@@ -67,25 +68,37 @@ const CountCard = ({ label, value, icon }) => (
   </div>
 );
 
-const ViolationCard = ({ violation }) => (
-  <div className="violation-card">
-    <div className="violation-header">
-      <h3>🚨 License Plate: {violation.plate_text}</h3>
-      <span className="confidence">Confidence: {(violation.plate_confidence * 100).toFixed(2)}%</span>
-    </div>
-    <div className="violation-images">
-      <div className="img-container">
-        <img src={`${API_BASE}/${violation.rider_image}`} alt="Rider" />
-        <label>Rider</label>
+const resolveImage = (path) => {
+  if (!path) return '';
+  return path.startsWith('http') ? path : `${API_BASE}/${path}`;
+};
+
+const ViolationCard = ({ violation }) => {
+  const plateLabel = violation.plate_text || violation.plate_number || 'Unknown';
+  const confidence = violation.plate_confidence;
+  const riderSrc = resolveImage(violation.rider_image);
+  const plateSrc = resolveImage(violation.plate_image);
+
+  return (
+    <div className="violation-card">
+      <div className="violation-header">
+        <h3>🚨 License Plate: {plateLabel}</h3>
+        <span className="confidence">Confidence: {confidence !== undefined && confidence !== null ? `${(confidence * 100).toFixed(2)}%` : '—'}</span>
       </div>
-      <div className="img-container">
-        <img src={`${API_BASE}/${violation.plate_image}`} alt="License Plate" />
-        <label>Plate</label>
+      <div className="violation-images">
+        <div className="img-container">
+          <img src={riderSrc} alt="Rider" />
+          <label>Rider</label>
+        </div>
+        <div className="img-container">
+          <img src={plateSrc} alt="License Plate" />
+          <label>Plate</label>
+        </div>
       </div>
+      <div className="violation-timestamp">{violation.timestamp || 'Timestamp unavailable'}</div>
     </div>
-    <div className="violation-timestamp">{violation.timestamp}</div>
-  </div>
-);
+  );
+};
 
 function App() {
   const [files, setFiles] = useState(Array(REQUIRED_FILES).fill(null));
@@ -101,6 +114,11 @@ function App() {
   const [helmetResult, setHelmetResult] = useState(null);
   const [helmetLoading, setHelmetLoading] = useState(false);
   const [helmetError, setHelmetError] = useState(null);
+
+  // Supabase-backed violations
+  const [violations, setViolations] = useState([]);
+  const [violationsLoading, setViolationsLoading] = useState(false);
+  const [violationsError, setViolationsError] = useState(null);
 
   const handleFiles = useCallback((incoming) => {
     setError(null);
@@ -186,17 +204,70 @@ function App() {
 
   const clearHelmet = () => { setHelmetFile(null); setHelmetResult(null); };
 
+  const formatTimestamp = (ts) => {
+    if (!ts) return '';
+    if (ts.includes('T')) {
+      const [date, time] = ts.split('T');
+      return date + ' ' + time.slice(0,8);
+    }
+    return ts;
+  };
+  const fetchViolations = useCallback(async () => {
+    if (!supabase) { setViolationsError('Supabase environment variables are missing.'); return; }
+    setViolationsLoading(true);
+    setViolationsError(null);
+    const { data, error } = await supabase
+      .from('violations')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      setViolationsError(error.message);
+    } else {
+      const formatted = (data || []).map(v => ({ ...v, timestamp: formatTimestamp(v.timestamp) }));
+      setViolations(formatted);
+    }
+    setViolationsLoading(false);
+  }, []);
+
+  const persistViolations = useCallback(async (list) => {
+    if (!supabase || !list || list.length === 0) return;
+    const pad = n => n.toString().padStart(2, '0');
+    const formatTimestamp = (d) => {
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    };
+    const payload = list.map((v) => ({
+      plate_text: v.plate_text || v.plate_number || 'Unknown',
+      plate_confidence: v.plate_confidence ?? null,
+      plate_image: resolveImage(v.plate_image),
+      rider_image: resolveImage(v.rider_image),
+      timestamp: v.timestamp || formatTimestamp(new Date()),
+    }));
+    const { error } = await supabase.from('violations').insert(payload);
+    if (error) {
+      setViolationsError(error.message);
+    } else {
+      fetchViolations();
+    }
+  }, [fetchViolations]);
+
+  useEffect(() => { fetchViolations(); }, [fetchViolations]);
+  useEffect(() => {
+    if (helmetResult && helmetResult.violations && helmetResult.violations.length > 0) {
+      persistViolations(helmetResult.violations);
+    }
+  }, [helmetResult, persistViolations]);
+
   return (
     <div className="dashboard-root">
       <aside className="sidebar">
-        <div className="brand">Dashboard v2.0</div>
+        <div className="brand">Dashboard v3.0</div>
         <nav>
-          <a href="#upload">Upload</a>
-          <a href="#results">Results</a>
+          <a href="#upload">Traffic Analysis</a>
           <a href="#helmet">Helmet Detection</a>
-          <a href="https://github.com" target="_blank" rel="noreferrer">Docs</a>
+          <a href="#violations">Violation Records</a>
+          <a href="https://github.com/anuragparashar26/traffic-management" target="_blank" rel="noreferrer">Github</a>
         </nav>
-        <div className="footer">v2.0 Dashboard</div>
+        <div className="footer">v3.0 Dashboard</div>
       </aside>
       <main className="main-area">
         <header className="page-header">
@@ -308,6 +379,23 @@ function App() {
                 <p className="no-violations">✅ No violations detected in this video.</p>
               )}
             </>
+          )}
+        </section>
+
+        <section id="violations" className="panel violations-panel">
+          <h2>Violation Records</h2>
+          <p className="muted">Persisted violations stored in Supabase.</p>
+          {violationsError && <ErrorBanner message={violationsError} onDismiss={() => setViolationsError(null)} />}
+          {violationsLoading && <Loader text="Loading violations from Supabase..." />}
+          {!violationsLoading && violations.length === 0 && !violationsError && (
+            <p className="muted">No records yet. Run helmet detection to log violations.</p>
+          )}
+          {!violationsLoading && violations.length > 0 && (
+            <div className="violations-grid">
+              {violations.map((violation, idx) => (
+                <ViolationCard key={violation.id || idx} violation={violation} />
+              ))}
+            </div>
           )}
         </section>
 
