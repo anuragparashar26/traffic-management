@@ -18,6 +18,7 @@ import os
 import time
 import json
 import math
+import uuid
 from collections import deque
 from typing import Deque, List, Sequence, Tuple
 from datetime import datetime
@@ -30,6 +31,26 @@ import torch
 from ultralytics import YOLO
 from paddleocr import PaddleOCR
 from image_to_text import predict_number_plate
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("REACT_APP_SUPABASE_URL")
+SUPABASE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    or os.getenv("SUPABASE_ANON_KEY")
+    or os.getenv("REACT_APP_SUPABASE_ANON_KEY")
+    or os.getenv("SUPABASE_KEY")
+)
+SUPABASE_BUCKET = os.getenv("SUPABASE_VIOLATIONS_BUCKET", "violations")
+
+_supabase_client: Client | None = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Failed to initialize Supabase client: {exc}")
 
 # --- Genetic Algorithm Section ---
 def fitness_function(C: float, g: float, x: float, c: float) -> float:
@@ -274,6 +295,37 @@ def build_detection_model() -> cv.dnn_DetectionModel:
     return model
 
 
+def upload_image_to_supabase(image: np.ndarray, prefix: str) -> str | None:
+    """Upload an image (BGR array) to Supabase Storage and return a public URL."""
+    if _supabase_client is None:
+        print("Supabase client is not initialized; skipping upload")
+        return None
+
+    ok, buffer = cv.imencode('.jpg', image)
+    if not ok:
+        print("Failed to encode image for upload")
+        return None
+
+    storage = _supabase_client.storage.from_(SUPABASE_BUCKET)
+    path = f"{prefix}/{datetime.utcnow().strftime('%Y/%m/%d')}/{uuid.uuid4().hex}.jpg"
+
+    try:
+        file_opts = {
+            "content-type": "image/jpeg",
+            "upsert": "true",
+            "cache-control": "3600",
+        }
+        res = storage.upload(path, buffer.tobytes(), file_options=file_opts)
+        if res and getattr(res, "error", None):
+            print(f"Supabase upload error for {path}: {res.error}")
+            return None
+        public_url = storage.get_public_url(path)
+        return public_url
+    except Exception as exc: 
+        print(f"Supabase upload failed for {path}: {exc}")
+        return None
+
+
 def detect_cars(video_file: str) -> float:
     Conf_threshold = 0.5
     NMS_threshold = 0.4
@@ -510,12 +562,18 @@ def detect_helmets(video_file: str) -> dict:
                     # Save plate crop
                     plate_filename = f"plate_{timestamp}.jpg"
                     cv.imwrite(os.path.join(VIOLATION_DIR, plate_filename), rider_info["plate"]["crop"])
+
+                    # Upload to Supabase Storage (fallback to local path if unavailable)
+                    rider_public_url = upload_image_to_supabase(rider_crop, "riders")
+                    plate_public_url = upload_image_to_supabase(rider_info["plate"]["crop"], "plates")
+                    rider_path = rider_public_url or f"violations/{rider_filename}"
+                    plate_path = plate_public_url or f"violations/{plate_filename}"
                     
                     # Create violation record
                     violation_record = {
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "rider_image": f"violations/{rider_filename}",
-                        "plate_image": f"violations/{plate_filename}",
+                        "rider_image": rider_path,
+                        "plate_image": plate_path,
                         "plate_text": plate_text,
                         "plate_confidence": rider_info["plate"]["ocr_confidence"]
                     }

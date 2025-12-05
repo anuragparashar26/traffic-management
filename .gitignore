@@ -5,3 +5,4 @@ backend/best.pt
 backend/uploads
 sample_videos
 frontend/.env
+backend/.env
