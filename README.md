@@ -19,7 +19,7 @@ This project utilizes computer vision and artificial intelligence for real-time 
 - **License Plate Recognition**: Automated OCR using PaddleOCR with 90%+ confidence threshold
 - **Violation Tracking**:
   - Captures and saves images of violators (rider + license plate)
-  - Prevents duplicate violation records for the same plate
+  - Prevents duplicate violation records for the same plate (session-based tracking)
   - Stores violation data with timestamps in JSON format
   - Web-accessible violation gallery with confidence scores
 - **Multi-class Detection**: Identifies riders, helmets, no-helmets, and license plates
@@ -53,7 +53,7 @@ This project utilizes computer vision and artificial intelligence for real-time 
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10
 - Node.js 14+
 - Git
 
@@ -142,6 +142,13 @@ This project utilizes computer vision and artificial intelligence for real-time 
    - License plate number with confidence score
    - Captured images of violator and plate
    - Timestamp of violation
+   - **Gallery**: All detected violations are shown in a grid, with images and details
+
+#### Violation Gallery & JSON Storage
+
+- All helmet violations are stored in `violations.json` and images are saved in `static/violations/`
+- Duplicate violations for the same plate are prevented within a session
+- The dashboard displays all violations detected in the current video
 
 ## Project Structure
 
@@ -183,10 +190,36 @@ traffic-management/
 
 ### Detection Thresholds
 
-- **Vehicle Detection**: 60% confidence (YOLOv4)
+- **Vehicle Detection**: 40% confidence (YOLOv4)
 - **Rider Detection**: 45% confidence (YOLOv8)
 - **Helmet Detection**: 50% confidence (YOLOv8)
 - **License Plate OCR**: 90% confidence (PaddleOCR)
+
+## How Traffic Signal Timings Are Calculated
+
+### Input Metrics
+- For each direction (North, South, West, East), the system analyzes uploaded video and detects vehicles (car, bus, truck) using YOLOv4-tiny.
+- The dashboard shows the average peak vehicle count per frame over a rolling 30-second window for each direction. This is used as a congestion proxy for optimization.
+
+### Genetic Algorithm (GA) Logic
+- The GA allocates green times for each direction based on detected vehicle counts.
+- **Congestion is calculated as:**
+  - `congestion = cars_detected / approach_capacity` (capacity is fixed at 20 vehicles per direction)
+- **Green time constraints:**
+  - Each green time is always between 10 and 60 seconds.
+  - The sum of all green times never exceeds the cycle time (148 seconds).
+- **GA operators:**
+  - Crossover, mutation, and inversion are used to evolve candidate solutions.
+  - After mutation/inversion, a repair step ensures all green times and their sum remain within bounds.
+- **Fitness function:**
+  - Each approach's delay is weighted by its detected vehicle count, so higher congestion leads to longer green allocation.
+
+### Dashboard Output
+- The dashboard displays:
+  - **Optimized green times** for each direction (in seconds)
+  - **Input metrics** (average peak vehicles detected per direction)
+  - **GA parameters** (population, generations, mutation rate, green time range, cycle time)
+- If a direction has more detected vehicles, it will generally receive a longer green time, subject to the total cycle constraint and minimum/maximum bounds.
 
 ## Key Features Implemented
 
@@ -196,7 +229,7 @@ traffic-management/
 ✅ Helmet violation detection  
 ✅ License plate recognition  
 ✅ Automated violation tracking  
-✅ Duplicate violation prevention  
+✅ Duplicate violation prevention (session-based)  
 ✅ Web-based dashboard  
 ✅ Violation image gallery  
 ✅ JSON-based violation storage
