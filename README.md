@@ -198,10 +198,12 @@ traffic-management/
 ## How Traffic Signal Timings Are Calculated
 
 ### Input Metrics
+
 - For each direction (North, South, West, East), the system analyzes uploaded video and detects vehicles (car, bus, truck) using YOLOv4-tiny.
 - The dashboard shows the average peak vehicle count per frame over a rolling 30-second window for each direction. This is used as a congestion proxy for optimization.
 
 ### Genetic Algorithm (GA) Logic
+
 - The GA allocates green times for each direction based on detected vehicle counts.
 - **Congestion is calculated as:**
   - `congestion = cars_detected / approach_capacity` (capacity is fixed at 20 vehicles per direction)
@@ -215,6 +217,7 @@ traffic-management/
   - Each approach's delay is weighted by its detected vehicle count, so higher congestion leads to longer green allocation.
 
 ### Dashboard Output
+
 - The dashboard displays:
   - **Optimized green times** for each direction (in seconds)
   - **Input metrics** (average peak vehicles detected per direction)
