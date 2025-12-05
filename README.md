@@ -24,6 +24,17 @@ This project utilizes computer vision and artificial intelligence for real-time 
   - Web-accessible violation gallery with confidence scores
 - **Multi-class Detection**: Identifies riders, helmets, no-helmets, and license plates
 
+### Supabase Cloud Storage Integration
+
+- **Cloud Violation Image Storage**: Rider and license plate images for each violation are uploaded to a Supabase Storage bucket (`violations` by default).
+- **Public URLs**: Violation records reference Supabase-hosted image URLs for frontend display.
+- **Environment Configuration**: Backend reads Supabase credentials from `.env`:
+  - `SUPABASE_URL` (project URL)
+  - `SUPABASE_SERVICE_ROLE_KEY` (recommended) or `SUPABASE_ANON_KEY`
+  - `SUPABASE_VIOLATIONS_BUCKET` (optional, defaults to `violations`)
+- **Automatic Fallback**: If Supabase upload fails, images are saved locally in `static/violations/` and referenced by local path.
+- **Frontend Display**: React dashboard fetches violation records from Supabase table and displays images using public URLs.
+
 ## Technology Stack
 
 ### Backend
@@ -84,6 +95,17 @@ This project utilizes computer vision and artificial intelligence for real-time 
    - `yolov4-tiny.cfg` - YOLOv4 configuration
    - `best.pt` - YOLOv8 helmet detection model
    - `classes.txt` - Class labels for detection
+
+5. Configure Supabase Storage (cloud image hosting):
+   - Create a bucket named `violations` in your Supabase project (Storage > New Bucket)
+   - Set bucket policy to public (or use signed URLs)
+   - Add these to your `backend/.env`:
+     ```
+     SUPABASE_URL="https://<your-project>.supabase.co"
+     SUPABASE_SERVICE_ROLE_KEY="<your-service-role-key>"
+     SUPABASE_VIOLATIONS_BUCKET="violations"
+     ```
+   - Restart backend after editing `.env`
 
 ### Frontend Setup
 
@@ -146,9 +168,10 @@ This project utilizes computer vision and artificial intelligence for real-time 
 
 #### Violation Gallery & JSON Storage
 
-- All helmet violations are stored in `violations.json` and images are saved in `static/violations/`
+- All helmet violations are stored in `violations.json` and images are saved in `static/violations/` (if Supabase upload fails)
+- If Supabase is configured, images are uploaded to the cloud bucket and public URLs are used in violation records
 - Duplicate violations for the same plate are prevented within a session
-- The dashboard displays all violations detected in the current video
+- The dashboard displays all violations detected in the current video and all persisted records from Supabase
 
 ## Project Structure
 
