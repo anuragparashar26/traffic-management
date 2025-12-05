@@ -4,6 +4,14 @@ import './styles.css';
 
 const REQUIRED_FILES = 4;
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const GA_PARAMS = {
+  greenMin: 10,
+  greenMax: 60,
+  cycleTime: 148,
+  mutationRate: 0.02,
+  population: 400,
+  generations: 25,
+};
 const DIRECTIONS = [
   { key: 'north', label: 'North', icon: '⬆️' },
   { key: 'south', label: 'South', icon: '⬇️' },
@@ -52,6 +60,13 @@ const HelmetResultCard = ({ label, value, icon }) => (
   </div>
 );
 
+const CountCard = ({ label, value, icon }) => (
+  <div className="direction-card" aria-label={`${label} vehicles`}>
+    <div className="dir-header">{icon}<span>{label} vehicles</span></div>
+    <div className="dir-value">{value?.toFixed ? value.toFixed(2) : value}</div>
+  </div>
+);
+
 const ViolationCard = ({ violation }) => (
   <div className="violation-card">
     <div className="violation-header">
@@ -78,6 +93,8 @@ function App() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [showStreams, setShowStreams] = useState(false);
+  const [streamToken, setStreamToken] = useState(null);
 
   // New state for helmet detection
   const [helmetFile, setHelmetFile] = useState(null);
@@ -109,7 +126,12 @@ function App() {
   const onDragOver = (e) => { e.preventDefault(); setDragActive(true); };
   const onDragLeave = (e) => { e.preventDefault(); setDragActive(false); };
 
-  const clearAll = () => { setFiles(Array(REQUIRED_FILES).fill(null)); setResult(null); };
+  const clearAll = () => {
+    setFiles(Array(REQUIRED_FILES).fill(null));
+    setResult(null);
+    setShowStreams(false);
+    setStreamToken(null);
+  };
 
   const removeFile = (idx) => {
     const updated = [...files];
@@ -121,6 +143,9 @@ function App() {
 
   const submit = async () => {
     if (!readyToSubmit) { setError(`Please add all ${REQUIRED_FILES} videos before running.`); return; }
+    const token = Date.now();
+    setShowStreams(true);
+    setStreamToken(token);
     setLoading(true);
     setError(null);
     setResult(null);
@@ -215,11 +240,48 @@ function App() {
               ))}
             </div>
           )}
+          {result && result.car_counts && !loading && (
+            <div style={{ marginTop: '14px' }}>
+              <h3 style={{ margin: '0 0 8px', fontSize: '.95rem', color: '#b5bcc9' }}>Input Metrics (cars detected)</h3>
+              <div className="directions-grid">
+                {DIRECTIONS.map(dir => (
+                  <CountCard key={dir.key} label={dir.label} value={result.car_counts[dir.key]} icon={dir.icon} />
+                ))}
+              </div>
+              <p className="muted" style={{ marginTop: '8px' }}>
+                GA params: green {GA_PARAMS.greenMin}-{GA_PARAMS.greenMax}s, cycle {GA_PARAMS.cycleTime}s, pop {GA_PARAMS.population}, generations {GA_PARAMS.generations}, mutation {GA_PARAMS.mutationRate}.
+              </p>
+            </div>
+          )}
           {result && result.error && <p className="error-text">{result.error}</p>}
         </section>
 
+        <section className="panel stream-panel">
+          <h2>3. Live Processing (4 Directions)</h2>
+          <p className="muted">Streams start as soon as you run optimization. Each pane shows the annotated frames for its direction.</p>
+          {!showStreams && <p className="muted">Run optimization to start live previews.</p>}
+          {showStreams && (
+            <div className="streams-grid">
+              {DIRECTIONS.map((dir, idx) => (
+                <div className="stream-card" key={dir.key}>
+                  <div className="dir-header">{dir.icon}<span>{dir.label}</span></div>
+                  {streamToken ? (
+                    <img
+                      src={`${API_BASE}/stream/${idx}?token=${streamToken}`}
+                      alt={`${dir.label} live stream`}
+                      className="stream-frame"
+                    />
+                  ) : (
+                    <div className="stream-placeholder">Waiting for upload...</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         <section id="helmet" className="panel helmet-panel">
-          <h2>3. Helmet Detection & Violation Tracking</h2>
+          <h2>4. Helmet Detection & Violation Tracking</h2>
           <p className="muted">Upload a video to detect bike riders, helmets, and no-helmet cases for safety compliance.</p>
           <div className="actions" style={{ marginBottom: '16px' }}>
             <input id="helmet-input" type="file" accept="video/*" onChange={onHelmetInputChange} hidden />
